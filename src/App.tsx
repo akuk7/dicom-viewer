@@ -1,90 +1,112 @@
-import { useEffect,  useRef } from "react"
-import createImageIdsAndCacheMetaData  from "./lib/createImageIdsAndCacheMetaData"
-import { RenderingEngine, Enums, type Types, volumeLoader, cornerstoneStreamingImageVolumeLoader } from "@cornerstonejs/core"
-import {init as csRenderInit} from "@cornerstonejs/core"
-import {init as csToolsInit} from "@cornerstonejs/tools"
-import {init as dicomImageLoaderInit} from "@cornerstonejs/dicom-image-loader"
+import { useEffect, useState } from "react"
+import Viewer from "./Viewer"
 
-
-volumeLoader.registerUnknownVolumeLoader(
-  cornerstoneStreamingImageVolumeLoader 
-)
+interface ViewerData {
+  id: string
+  zoomLevel: number
+  syncZoom: boolean
+}
 
 function App() {
-  const elementRef = useRef<HTMLDivElement>(null)
-  const running = useRef(false)
-
-  useEffect(() => {
-    const setup = async () => {
-      if (running.current) {
-        return
-      }
-      running.current = true
-      
-      await csRenderInit()
-      await csToolsInit()
-      dicomImageLoaderInit({maxWebWorkers:1})
-
-      // Get Cornerstone imageIds and fetch metadata into RAM
-      const imageIds = await createImageIdsAndCacheMetaData({
-        StudyInstanceUID:
-          "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463",
-        SeriesInstanceUID:
-          "1.3.6.1.4.1.14519.5.2.1.7009.2403.226151125820845824875394858561",
-        wadoRsRoot: "https://d3t6nz73ql33tx.cloudfront.net/dicomweb",
-      })
-
-      // Instantiate a rendering engine
-      const renderingEngineId = "myRenderingEngine"
-      const renderingEngine = new RenderingEngine(renderingEngineId)
-      const viewportId = "CT"
-
-
-      const viewportInput = {
-        viewportId,
-        type: Enums.ViewportType.ORTHOGRAPHIC,
-        element: elementRef.current,
-        defaultOptions: {
-          orientation: Enums.OrientationAxis.SAGITTAL,
-        },
-      }
-
-      renderingEngine.enableElement(viewportInput)
-
-      // Get the stack viewport that was created
-      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport
-
-      // Define a volume in memory
-      const volumeId = "streamingImageVolume"
-      const volume = await volumeLoader.createAndCacheVolume(volumeId, {
-        imageIds,
-      })
-
-      // Set the volume to load
-      // @ts-ignore
-      volume.load()
-
-      // Set the volume on the viewport and it's default properties
-      viewport.setVolumes([{ volumeId}])
-
-      // Render the image
-      viewport.render()
+  const [viewers, setViewers] = useState<ViewerData[]>(() => {
+    // Load from localStorage on initial render
+    const saved = localStorage.getItem('viewers')
+    if (saved) {
+      return JSON.parse(saved)
     }
+    // Default: one viewer with sync off
+    return [{ id: '1', zoomLevel: 1, syncZoom: false }]
+  })
+  
+  const [nextId, setNextId] = useState(() => {
+    const saved = localStorage.getItem('nextId')
+    return saved ? parseInt(saved) : 2
+  })
 
-    setup()
+  // Save to localStorage whenever viewers change
+  useEffect(() => {
+    localStorage.setItem('viewers', JSON.stringify(viewers))
+    localStorage.setItem('nextId', nextId.toString())
+  }, [viewers, nextId])
 
-    // Create a stack viewport
-  }, [elementRef, running])
+  // Calculate global zoom level for synced viewers
+  const globalZoomLevel = viewers.find(v => v.syncZoom)?.zoomLevel || 1
+
+  const addViewer = () => {
+    const newViewer: ViewerData = {
+      id: nextId.toString(),
+      zoomLevel: 1,
+      syncZoom: false
+    }
+    setViewers(prev => [...prev, newViewer])
+    setNextId(prev => prev + 1)
+  }
+
+  const removeViewer = (id: string) => {
+    setViewers(prev => prev.filter(v => v.id !== id))
+  }
+
+  const updateViewerZoom = (id: string, zoomLevel: number) => {
+    setViewers(prev => prev.map(v => 
+      v.id === id ? { ...v, zoomLevel } : v
+    ))
+  }
+
+  const updateViewerSync = (id: string, syncZoom: boolean) => {
+    setViewers(prev => prev.map(v => 
+      v.id === id ? { ...v, syncZoom } : v
+    ))
+  }
 
   return (
-    <div
-      ref={elementRef}
-      style={{
-        width: "512px",
-        height: "512px",
-        backgroundColor: "#000",
-      }}
-    ></div>
+    <div style={{ padding: '20px' }}>
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        marginBottom: '20px',
+        padding: '10px',
+        backgroundColor: '#f0f0f0',
+        borderRadius: '8px'
+      }}>
+        <h1 style={{ margin: 0 }}>DICOM Multi-Viewer</h1>
+        <button 
+          onClick={addViewer}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#28a745',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '14px'
+          }}
+        >
+          Add Viewer
+        </button>
+      </div>
+      
+      <div style={{ 
+        display: 'grid', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+        gap: '20px',
+        maxHeight: '80vh',
+        overflowY: 'auto'
+      }}>
+        {viewers.map(viewer => (
+          <Viewer
+            key={viewer.id}
+            id={viewer.id}
+            zoomLevel={viewer.zoomLevel}
+            onZoomChange={(zoomLevel) => updateViewerZoom(viewer.id, zoomLevel)}
+            syncZoom={viewer.syncZoom}
+            onSyncToggle={(syncZoom) => updateViewerSync(viewer.id, syncZoom)}
+            globalZoomLevel={globalZoomLevel}
+            onRemove={() => removeViewer(viewer.id)}
+          />
+        ))}
+      </div>
+    </div>
   )
 }
 

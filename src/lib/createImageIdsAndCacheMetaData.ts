@@ -2,6 +2,18 @@ import { api } from "dicomweb-client"
 import cornerstoneDICOMImageLoader from "@cornerstonejs/dicom-image-loader"
 
 /**
+ * Creates imageIds for local DICOM files
+ * 
+ * @param {string} filePath - Path to the DICOM file relative to the public directory
+ * @returns {string[]} An array of imageIds for the local DICOM file
+ */
+export async function createLocalImageIds(filePath: string): Promise<string[]> {
+  // Create a file URL for the local DICOM file
+  const imageId = `wadouri:${filePath}`
+  
+  return [imageId]
+}
+
 /**
  * Uses dicomweb-client to fetch metadata of a study, cache it in cornerstone,
  * and return a list of imageIds for the frames.
