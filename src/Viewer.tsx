@@ -19,51 +19,67 @@ volumeLoader.registerUnknownVolumeLoader(
 interface ViewerProps {
   id: string
   zoomLevel: number
-  onZoomChange: (zoomLevel: number) => void
+  onZoomChange: (zoomLevel: number, isFromSync?: boolean) => void
   syncZoom: boolean
   onSyncToggle: (syncZoom: boolean) => void
-  globalZoomLevel?: number
   onRemove: () => void
+  isSyncMaster: boolean
 }
 
 export default function Viewer({ 
   id, 
   zoomLevel, 
   onZoomChange, 
-  syncZoom, 
-  onSyncToggle, 
-  globalZoomLevel,
-  onRemove 
+  syncZoom,
+  onSyncToggle,
+  onRemove,
+  isSyncMaster
 }: ViewerProps) {
   const elementRef = useRef<HTMLDivElement>(null)
   const runningRef = useRef(false) // Unique ref for each viewer
   const viewportRef = useRef<Types.IStackViewport | null>(null)
   const renderingEngineRef = useRef<RenderingEngine | null>(null)
   const [isInitialized, setIsInitialized] = useState(false)
+  const eventListenerAdded = useRef(false) // Track if event listener is added
+  const lastAppliedZoomRef = useRef<number>(zoomLevel) // Track last applied zoom level
+  const isApplyingZoomRef = useRef(false) // Prevent recursive zoom applications
 
   // Define handleWheel at component scope so it can be referenced in cleanup
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault()
     
     // Only proceed if viewer is fully initialized
-    if (!isInitialized || !viewportRef.current || !renderingEngineRef.current) {
+    if (!isInitialized || !viewportRef.current || !renderingEngineRef.current || isApplyingZoomRef.current) {
       return
     }
     
-    const delta = e.deltaY > 0 ? 0.95 : 1.05
-    const newZoomLevel = zoomLevel * delta
-    onZoomChange(newZoomLevel)
-    
+    // Use Cornerstone's built-in zoom functionality
     try {
+      const delta = e.deltaY > 0 ? 0.9 : 1.1
       const camera = viewportRef.current.getCamera()
+      const currentScale = camera.parallelScale
+      const newScale = currentScale * delta
+      
       viewportRef.current.setCamera({
-        parallelScale: camera.parallelScale * delta
+        parallelScale: newScale
       })
       viewportRef.current.render()
+      
+      // Calculate zoom percentage based on a reasonable scale range
+      // Assuming scale around 100-200 is "normal" zoom
+      const baseScale = 150 // This seems to be around the "normal" scale value
+      const zoomPercentage = (baseScale / newScale) * 100
+      const zoomDecimal = Math.max(0.01, Math.min(10, zoomPercentage / 100)) // Clamp between 1% and 1000%
+      
+      lastAppliedZoomRef.current = zoomDecimal
+      onZoomChange(zoomDecimal, false) // false means this is not from sync
+      
+      console.log(`Zoom: ${(zoomDecimal * 100).toFixed(0)}% (scale: ${newScale.toFixed(2)})`)
+      
     } catch (error) {
       console.warn('Viewer zoom error:', error)
     }
-  }, [zoomLevel, onZoomChange, isInitialized])
+  }, [onZoomChange, isInitialized])
 
   useEffect(() => {
     const setup = async () => {
@@ -170,6 +186,7 @@ export default function Viewer({
       // Cleanup
       try {
         setIsInitialized(false)
+        eventListenerAdded.current = false
         if (elementRef.current) {
           elementRef.current.removeEventListener('wheel', handleWheel)
         }
@@ -187,42 +204,71 @@ export default function Viewer({
 
   // Add event listener when viewer is initialized
   useEffect(() => {
-    if (isInitialized && elementRef.current) {
+    if (isInitialized && elementRef.current && !eventListenerAdded.current) {
       elementRef.current.addEventListener('wheel', handleWheel)
+      eventListenerAdded.current = true
       console.log(`Event listener added for viewer ${id}`)
     }
-  }, [isInitialized, handleWheel, id])
+  }, [isInitialized, id]) // Removed handleWheel from dependencies
 
-  // Handle global zoom sync
+  // Apply zoom level changes from sync (external updates)
   useEffect(() => {
-    try {
-      if (syncZoom && globalZoomLevel && viewportRef.current && renderingEngineRef.current && isInitialized) {
-        const camera = viewportRef.current.getCamera()
-        const currentZoom = camera.parallelScale
-        const targetZoom = globalZoomLevel
-        
-        if (Math.abs(currentZoom - targetZoom) > 0.01) {
-          viewportRef.current.setCamera({
-            parallelScale: targetZoom
-          })
-          viewportRef.current.render()
-        }
-      }
-    } catch (error) {
-      console.warn('Global zoom sync error:', error)
+    if (!isInitialized || !viewportRef.current || !renderingEngineRef.current) {
+      return
     }
-  }, [syncZoom, globalZoomLevel, isInitialized])
+
+    // Skip if this viewer is the sync master (to prevent applying its own changes back to itself)
+    if (isSyncMaster) {
+      return
+    }
+
+    // Skip if the zoom level hasn't actually changed
+    if (Math.abs(zoomLevel - lastAppliedZoomRef.current) < 0.001) {
+      return
+    }
+
+    // Apply the zoom level to the viewport
+    try {
+      isApplyingZoomRef.current = true
+      
+      const baseScale = 150
+      const targetScale = baseScale / zoomLevel
+      
+      viewportRef.current.setCamera({
+        parallelScale: targetScale
+      })
+      viewportRef.current.render()
+      
+      lastAppliedZoomRef.current = zoomLevel
+      
+      console.log(`Applied sync zoom to viewer ${id}: ${(zoomLevel * 100).toFixed(0)}% (scale: ${targetScale.toFixed(2)})`)
+      
+    } catch (error) {
+      console.warn('Apply zoom error:', error)
+    } finally {
+      // Small delay before allowing new zoom operations
+      setTimeout(() => {
+        isApplyingZoomRef.current = false
+      }, 10)
+    }
+  }, [zoomLevel, isInitialized, id, isSyncMaster])
 
   const resetZoom = () => {
     try {
       if (viewportRef.current && renderingEngineRef.current && isInitialized) {
-        const camera = viewportRef.current.getCamera()
-        const baseScale = camera.parallelScale / zoomLevel
+        // Reset to base scale (100% zoom)
+        const baseScale = 150
+        
         viewportRef.current.setCamera({
           parallelScale: baseScale
         })
         viewportRef.current.render()
-        onZoomChange(1)
+        
+        // Update zoom level to 1 (100%)
+        lastAppliedZoomRef.current = 1
+        onZoomChange(1, false)
+        
+        console.log(`Reset zoom for viewer ${id} to 100% (scale: ${baseScale.toFixed(2)})`)
       }
     } catch (error) {
       console.warn('Reset zoom error:', error)
@@ -282,7 +328,7 @@ export default function Viewer({
             checked={syncZoom}
             onChange={(e) => onSyncToggle(e.target.checked)}
           />
-          Sync Zoom
+          Sync
         </label>
       </div>
       
@@ -296,4 +342,4 @@ export default function Viewer({
       ></div>
     </div>
   )
-} 
+}
